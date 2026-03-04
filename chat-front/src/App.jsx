@@ -5,26 +5,21 @@ const API_BASE = "http://localhost:8080";
 const WS_URL = "ws://localhost:8080/ws-chat";
 
 export default function App() {
-  // REST로 가져온 채팅방 목록
   const [rooms, setRooms] = useState([]);
   const [newRoomName, setNewRoomName] = useState("");
 
-  // 현재 선택된 방
   const [currentRoom, setCurrentRoom] = useState(null);
 
-  // 채팅
   const [name, setName] = useState("user");
   const [text, setText] = useState("");
   const [messages, setMessages] = useState([]);
 
-  // 연결 상태
   const [connected, setConnected] = useState(false);
 
-  // STOMP Client / Subscription 관리
   const clientRef = useRef(null);
   const subRef = useRef(null);
 
-  // 1) 채팅방 목록 불러오기
+  // 1) 방 목록 불러오기
   const loadRooms = async () => {
     try {
       const res = await fetch(`${API_BASE}/api/rooms`);
@@ -37,33 +32,32 @@ export default function App() {
     }
   };
 
-  // 2) 채팅방 생성
+  // 2) 방 생성
   const createRoom = async () => {
     const roomName = newRoomName.trim();
     if (!roomName) return;
 
     try {
-      // RoomController: @PostMapping create(@RequestParam String name)
-      const res = await fetch(`${API_BASE}/api/rooms?name=${encodeURIComponent(roomName)}`, {
-        method: "POST",
-      });
+      const res = await fetch(
+        `${API_BASE}/api/rooms?name=${encodeURIComponent(roomName)}`,
+        { method: "POST" }
+      );
       if (!res.ok) throw new Error("room create failed");
-      const created = await res.json();
 
+      const created = await res.json();
       setNewRoomName("");
       await loadRooms();
-      // 생성하면 바로 입장
-      enterRoom(created);
+      await enterRoom(created);
     } catch (e) {
       console.error(e);
       alert("채팅방 생성 실패");
     }
   };
 
-  // 3) STOMP 연결 (최초 1회)
+  // 3) STOMP 연결(최초 1회)
   useEffect(() => {
     const client = new Client({
-      brokerURL: WS_URL,      // ✅ SockJS 없이 ws로 직접
+      brokerURL: WS_URL, // ✅ 백엔드 addEndpoint("/ws-chat") 이면 이거 사용
       reconnectDelay: 3000,
       debug: () => {},
 
@@ -94,37 +88,52 @@ export default function App() {
       try {
         if (subRef.current) subRef.current.unsubscribe();
       } catch (e) {
-  console.warn("unsubscribe failed:", e);
-}
+        console.warn("unsubscribe failed:", e);
+      }
       client.deactivate();
       clientRef.current = null;
     };
   }, []);
 
-  // 4) 앱 시작 시 채팅방 목록 로드
+  // 4) 시작 시 방 목록 로드
   useEffect(() => {
     loadRooms();
   }, []);
 
-  // 5) 방 입장: 해당 roomId로 subscribe 갈아끼우기
-  const enterRoom = (room) => {
+  // ✅ 5) 방 입장: (여기가 “fetch 과거 메시지” 넣는 정확한 위치)
+  const enterRoom = async (room) => {
     setCurrentRoom(room);
-    setMessages([]); // 방 바뀌면 메시지 초기화(원하면 유지 가능)
+    setMessages([]); // 방 바뀌면 초기화
 
+    // (A) 과거 메시지 불러오기 (REST)
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/rooms/${room.roomId}/messages?limit=50`
+      );
+      if (res.ok) {
+        const history = await res.json();
+        setMessages(history); // 과거 메시지로 화면 채우기
+      } else {
+        setMessages([]);
+      }
+    } catch (e) {
+      console.error(e);
+      setMessages([]);
+    }
+
+    // (B) STOMP 구독 갈아끼우기
     const client = clientRef.current;
     if (!client || !client.connected) {
       alert("서버 연결중... 잠시 후 다시 시도");
       return;
     }
 
-    // 기존 구독 해제
     try {
       if (subRef.current) subRef.current.unsubscribe();
     } catch (e) {
-  console.warn("unsubscribe failed:", e);
-}
+      console.warn("unsubscribe failed:", e);
+    }
 
-    // 새 방 구독
     const topic = `/sub/chat/room/${room.roomId}`;
     subRef.current = client.subscribe(topic, (msg) => {
       try {
@@ -138,7 +147,7 @@ export default function App() {
     console.log("📌 subscribed:", topic);
   };
 
-  // 6) 메시지 전송 (roomId 포함)
+  // 6) 메시지 전송
   const send = () => {
     const client = clientRef.current;
 
@@ -152,7 +161,6 @@ export default function App() {
     }
     if (!text.trim()) return;
 
-    // ChatController: @MessageMapping("/chat.send/{roomId}")
     client.publish({
       destination: `/pub/chat.send/${currentRoom.roomId}`,
       body: JSON.stringify({ sender: name, message: text }),
@@ -196,8 +204,7 @@ export default function App() {
                 borderRadius: 8,
                 marginBottom: 8,
                 cursor: "pointer",
-                background:
-                  currentRoom?.roomId === r.roomId ? "#eef" : "#f7f7f7",
+                background: currentRoom?.roomId === r.roomId ? "#eef" : "#f7f7f7",
               }}
             >
               <div style={{ fontWeight: 700 }}>{r.name}</div>
